@@ -1,6 +1,7 @@
 """
-Application IA-BrainStormer GPS (Version V5 - Save & Load)
-Système complet + Gestion de l'Historique + Sauvegarde/Chargement de Projet
+Application IA-BrainStormer GPS (Version V6 - Hybride & Automatique)
+Système complet + Gestion de l'Historique + Save/Load
+Mode HYBRIDE : Détecte automatiquement si une clé admin est présente.
 """
 import streamlit as st
 import json
@@ -95,7 +96,6 @@ class GPSSystem:
 
 st.set_page_config(page_title="IA-BrainStormer GPS", page_icon="🧭", layout="wide")
 
-# CSS
 st.markdown("""
 <style>
     .main-title {font-size: 3rem; text-align: center; color: #667eea;}
@@ -106,12 +106,10 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# --- GESTION DE SESSION ---
 if 'step' not in st.session_state: st.session_state.step = 'crash_test'
-if 'history' not in st.session_state: st.session_state.history = [] # Liste des projets de la session
+if 'history' not in st.session_state: st.session_state.history = []
 
 def reset_app():
-    # On garde la clé API et l'historique
     keys_keep = ['openai_api_key_input', 'history']
     st.session_state.step = 'crash_test'
     for k in list(st.session_state.keys()):
@@ -121,40 +119,37 @@ def load_project(uploaded_file):
     if uploaded_file is not None:
         try:
             data = json.load(uploaded_file)
-            # On restaure tout l'état
             for key, value in data.items():
                 st.session_state[key] = value
-            st.success("Projet chargé avec succès !")
+            st.success("Projet chargé !")
             st.rerun()
         except Exception as e:
-            st.error(f"Erreur de chargement : {e}")
+            st.error(f"Erreur : {e}")
 
-# --- SIDEBAR ---
+# --- LOGIQUE HYBRIDE (CLEF SECRÈTE) ---
+# On cherche d'abord dans les secrets du serveur
+server_key = st.secrets.get("OPENAI_API_KEY", None)
+
 with st.sidebar:
-    st.title("⚙️ Config & Mémoire")
-    api_key = st.text_input("Clé API OpenAI", type="password", key="openai_api_key_input")
-    model_choice = st.selectbox("Modèle", ["gpt-4o", "gpt-4-turbo", "gpt-3.5-turbo"])
+    st.title("⚙️ Config")
     
+    if server_key:
+        # CAS 1 : C'EST TOI (Clé cachée trouvée)
+        api_key = server_key
+        st.success("🔑 Mode Architecte (Clé Auto)")
+        st.info("La clé est chargée depuis le coffre-fort.")
+    else:
+        # CAS 2 : C'EST UN VISITEUR
+        st.info("🔒 Mode Visiteur (BYOK)")
+        api_key = st.text_input("Clé API OpenAI", type="password", key="openai_api_key_input")
+    
+    model_choice = st.selectbox("Modèle", ["gpt-4o", "gpt-4-turbo", "gpt-3.5-turbo"])
     st.markdown("---")
     st.subheader("💾 Sauvegarde / Chargement")
-    
-    # CHARGEMENT DE FICHIER
-    uploaded_file = st.file_uploader("📂 Charger un projet (.json)", type="json")
-    if uploaded_file:
-        if st.button("Restaurer ce projet"):
-            load_project(uploaded_file)
-
+    uploaded_file = st.file_uploader("📂 Charger (.json)", type="json")
+    if uploaded_file and st.button("Restaurer"): load_project(uploaded_file)
     st.markdown("---")
-    # HISTORIQUE DE SESSION
-    with st.expander("🕒 Historique de session"):
-        if not st.session_state.history:
-            st.write("Aucun projet terminé dans cette session.")
-        else:
-            for i, item in enumerate(reversed(st.session_state.history)):
-                st.markdown(f"**{item['time']}** : {item['titre']}")
-
-    st.markdown("---")
-    st.button("🔄 Nouveau Projet (Reset)", on_click=reset_app)
+    st.button("🔄 Reset", on_click=reset_app)
 
 if not api_key:
     st.warning("⬅️ Clé API requise.")
@@ -266,11 +261,9 @@ elif st.session_state.step == 'sequencage':
             res = gps.phase_s_sequencage(st.session_state.angle_choisi)
             st.session_state.phase_s_result = res
             
-            # SAUVEGARDE HISTORIQUE SESSION
             titre_projet = st.session_state.angle_choisi.get('titre', 'Projet Sans Titre')
             timestamp = datetime.now().strftime("%H:%M")
             st.session_state.history.append({"time": timestamp, "titre": titre_projet})
-            
             st.rerun()
     else:
         plan = st.session_state.phase_s_result
@@ -280,8 +273,6 @@ elif st.session_state.step == 'sequencage':
             for j in plan.get('etapes_journalieres', []):
                 st.write(f"**{j.get('jour')}** : {j.get('action_principale')}")
             
-            # PREPARATION SAUVEGARDE COMPLETE
-            # On exclut la clé API et l'objet de connexion de la sauvegarde JSON
             state_to_save = {k: v for k, v in st.session_state.items() if k not in ['openai_api_key_input', 'history']}
             json_str = json.dumps(state_to_save, indent=2, ensure_ascii=False)
             
