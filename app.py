@@ -1,7 +1,7 @@
 """
-Application IA-BrainStormer GPS (Version V3 - Indestructible)
+Application IA-BrainStormer GPS (Version V4 - Indexation Corrigée)
 Système complet : Crash Test DUR + Génération + Priorisation + Séquençage
-Mode BYOK (Bring Your Own Key) - Parsing JSON Renforcé
+Mode BYOK - Correction du décalage d'index (0 vs 1)
 """
 import streamlit as st
 import json
@@ -9,38 +9,27 @@ import re
 from openai import OpenAI
 
 # ==========================================
-# 0. OUTILS DE NETTOYAGE (LE SECRET)
+# 0. OUTILS DE NETTOYAGE
 # ==========================================
 
 def clean_json_response(raw_content):
-    """
-    Nettoie la réponse de l'IA pour extraire le JSON pur,
-    même si l'IA ajoute du texte autour ou des balises markdown.
-    """
     try:
-        # 1. Essai direct
         return json.loads(raw_content)
     except:
         pass
-
     try:
-        # 2. Chercher le contenu entre accolades {}
         match = re.search(r'\{.*\}', raw_content, re.DOTALL)
-        if match:
-            json_str = match.group()
-            return json.loads(json_str)
+        if match: return json.loads(match.group())
     except:
         pass
-        
     try:
-        # 3. Enlever les balises markdown ```json ... ```
         clean_str = re.sub(r'```json\s*|\s*```', '', raw_content)
         return json.loads(clean_str)
     except:
         return None
 
 # ==========================================
-# 1. LES PROMPTS SYSTÈME
+# 1. PROMPTS SYSTÈME
 # ==========================================
 
 SYSTEM_PROMPT_CRASH_TEST = """Tu es un Auditeur Stratégique ("Devil's Advocate").
@@ -62,20 +51,24 @@ FORMAT JSON STRICT :
   ] 
 }"""
 
+# MODIFICATION ICI : On force les ID 1, 2, 3 pour éviter les confusions
 SYSTEM_PROMPT_PHASE_P = """Tu es Expert Stratège. Utilise la Matrice de Conviction.
+On te donne 3 options numérotées 1, 2 et 3.
 Pondération : Douleur (Coef 4), Unicité (Coef 3), Alignement (Coef 3).
 
-FORMAT JSON STRICT OBLIGATOIRE :
+FORMAT JSON STRICT :
 {
   "evaluations": [
     {
-      "id": 1,
+      "id_option": 1,
       "titre": "Rappel titre",
       "score_douleur": 0,
       "score_unicite": 0,
       "score_alignement": 0,
       "score_total_pondere": 0
-    }
+    },
+    { "id_option": 2, ... },
+    { "id_option": 3, ... }
   ],
   "recommandation": {
     "id_gagnant": 1,
@@ -112,20 +105,13 @@ class GPSSystem:
                 temperature=0.7,
                 response_format={"type": "json_object"}
             )
-            raw_content = response.choices[0].message.content
-            
-            # Utilisation du nettoyeur
-            json_data = clean_json_response(raw_content)
-            
-            if json_data:
-                return json_data
-            else:
-                return {"error": True, "raw": raw_content, "message": "JSON illisible"}
-                
+            raw = response.choices[0].message.content
+            json_data = clean_json_response(raw)
+            if json_data: return json_data
+            else: return {"error": True, "raw": raw, "message": "JSON illisible"}
         except Exception as e:
             return {"error": True, "message": str(e)}
 
-    # Méthodes spécifiques
     def crash_test_dur(self, idee):
         return self.call_gpt(SYSTEM_PROMPT_CRASH_TEST, f"Idée: {idee}")
     
@@ -133,8 +119,13 @@ class GPSSystem:
         return self.call_gpt(SYSTEM_PROMPT_PHASE_G, f"Idée validée: {idee}")
 
     def phase_p_priorisation(self, angles):
-        txt = "\n".join([f"ID {a['id']}: {a['titre']} ({a['cible_precise']})" for a in angles])
-        return self.call_gpt(SYSTEM_PROMPT_PHASE_P, f"Classe ces options:\n{txt}")
+        # ON RENUMÉROTE PROPREMENT POUR L'IA (1, 2, 3)
+        txt = ""
+        for index, a in enumerate(angles):
+            # Index 0 devient Option 1
+            txt += f"OPTION {index + 1} : {a['titre']} ({a['cible_precise']})\n"
+            
+        return self.call_gpt(SYSTEM_PROMPT_PHASE_P, f"Classe ces 3 options :\n{txt}")
 
     def phase_s_sequencage(self, angle):
         return self.call_gpt(SYSTEM_PROMPT_PHASE_S, f"Plan pour: {angle.get('titre')}")
@@ -191,8 +182,7 @@ if st.session_state.step == 'crash_test':
     if 'crash_test_result' in st.session_state:
         res = st.session_state.crash_test_result
         if res.get('error'):
-            st.error("Erreur IA. Réessayez.")
-            st.write(res)
+            st.error("Erreur IA.")
         else:
             c1,c2,c3 = st.columns(3)
             c1.metric("Douleur", f"{res.get('score_D',0)}/10")
@@ -234,7 +224,7 @@ elif st.session_state.step == 'generation':
                     st.rerun()
             else: st.warning(f"Sélectionnez 3 angles ({len(sel)}/3)")
 
-# --- PHASE P (Celle qui posait problème) ---
+# --- PHASE P (CORRIGÉE) ---
 elif st.session_state.step == 'priorisation':
     st.subheader("Phase P : Priorisation")
     if 'phase_p_result' not in st.session_state:
@@ -244,47 +234,72 @@ elif st.session_state.step == 'priorisation':
     else:
         res = st.session_state.phase_p_result
         
-        # --- BLINDAGE DE L'AFFICHAGE ---
         if res.get('error') or 'evaluations' not in res:
-            st.error("L'IA a renvoyé un format inattendu.")
-            st.code(res.get('raw', str(res))) # Affiche le brut pour debug si besoin
-            if st.button("Relancer le calcul"): 
-                del st.session_state.phase_p_result
-                st.rerun()
+            st.error("Erreur format IA.")
+            st.code(res.get('raw'))
+            if st.button("Relancer"): del st.session_state.phase_p_result; st.rerun()
         else:
-            # Construction du tableau manuelle pour éviter les cases vides
+            # Construction Tableau
             data_clean = []
+            
+            # On mappe les résultats de 1,2,3 vers les objets réels
+            mes_3_angles = st.session_state.angles_selectionnes
+            
             for e in res['evaluations']:
-                # Calcul de secours si l'IA a oublié le total
+                # L'IA renvoie 1, 2 ou 3. On convertit en index 0, 1, 2
+                idx = e.get('id_option', 1) - 1
+                # Sécurité si index hors limite
+                if 0 <= idx < len(mes_3_angles):
+                    titre_reel = mes_3_angles[idx]['titre']
+                else:
+                    titre_reel = "Inconnu"
+
                 s_pain = e.get('score_douleur', 0)
                 s_uniq = e.get('score_unicite', 0)
                 s_align = e.get('score_alignement', 0)
                 total = e.get('score_total_pondere', (s_pain*4 + s_uniq*3 + s_align*3))
                 
                 data_clean.append({
-                    "Angle": e.get('titre', 'Angle inconnu'),
-                    "Douleur (x4)": s_pain,
-                    "Unicité (x3)": s_uniq,
-                    "Passion (x3)": s_align,
-                    "SCORE TOTAL": total
+                    "Option": f"Option {e.get('id_option')}",
+                    "Titre": titre_reel,
+                    "Total": total,
+                    "Douleur": s_pain,
+                    "Unicité": s_uniq,
+                    "Passion": s_align
                 })
             
             st.table(data_clean)
             
-            # Affichage de la recommandation
+            # Recommandation
             reco = res.get('recommandation', {})
-            if reco:
-                st.success(f"🏆 Recommandation : Angle #{reco.get('id_gagnant', '?')}")
-                st.info(f"Pourquoi : {reco.get('raison', 'Aucune justification fournie')}")
+            id_gagnant = reco.get('id_gagnant', 1)
+            
+            # On récupère le titre du gagnant
+            idx_gagnant = id_gagnant - 1
+            if 0 <= idx_gagnant < len(mes_3_angles):
+                titre_gagnant = mes_3_angles[idx_gagnant]['titre']
             else:
-                st.warning("Pas de recommandation explicite de l'IA.")
+                titre_gagnant = "Option invalide"
 
-            # Sélecteur
-            opts = {e.get('id'): e.get('titre') for e in res['evaluations']}
-            choix = st.selectbox("Votre choix final :", list(opts.keys()), format_func=lambda x: opts.get(x))
+            st.success(f"🏆 Recommandation : Option {id_gagnant} - {titre_gagnant}")
+            st.info(reco.get('raison'))
+
+            # Sélecteur Final synchronisé
+            # On crée une liste simple [0, 1, 2] pour le selectbox
+            options_indices = range(len(mes_3_angles))
+            
+            # Par défaut, on sélectionne l'index du gagnant
+            default_idx = idx_gagnant if (0 <= idx_gagnant < len(mes_3_angles)) else 0
+            
+            choix_idx = st.selectbox(
+                "Votre choix final :", 
+                options_indices, 
+                format_func=lambda i: f"Option {i+1}: {mes_3_angles[i]['titre']}",
+                index=default_idx
+            )
             
             if st.button("Générer le Plan -> Phase S"):
-                st.session_state.angle_choisi = next((a for a in st.session_state.angles_selectionnes if a["id"] == choix), None)
+                st.session_state.angle_choisi = mes_3_angles[choix_idx]
                 st.session_state.step = 'sequencage'
                 st.rerun()
 
@@ -306,3 +321,4 @@ elif st.session_state.step == 'sequencage':
             
             st.download_button("JSON", json.dumps(plan), "plan.json")
             st.button("Nouveau Projet", on_click=reset_app)
+            
